@@ -15,13 +15,19 @@ DEFAULT_RSS_FEEDS = [
 ]
 
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ASSISTME_",
         case_sensitive=False,
     )
 
-    cors_origins: list[str] = Field(default_factory=list)
+    cors_origins: list[str] = Field(default_factory=lambda: list(DEFAULT_CORS_ORIGINS))
     http_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     http_retries: int = Field(default=2, ge=0, le=5)
     http_retry_backoff_seconds: float = Field(default=0.35, ge=0.0, le=5.0)

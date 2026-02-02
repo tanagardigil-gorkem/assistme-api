@@ -15,7 +15,7 @@ def _mood_block() -> MoodBlock:
     )
 
 
-async def get_morning_dashboard(*, lat: float, lon: float, timezone: str, news_limit: int, q: str | None):
+async def get_daily_feed(*, lat: float, lon: float, timezone: str, news_limit: int, q: str | None):
     weather = await get_current_weather(lat=lat, lon=lon, timezone=timezone)
     news = await get_top_news(limit=news_limit, q=q, sources=None)
     return DashboardMorningResponse(

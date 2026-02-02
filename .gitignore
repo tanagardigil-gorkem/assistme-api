@@ -16,3 +16,6 @@ build/
 *.egg-info/
 
 .DS_Store
+
+# IDE / editor
+/.idea/
