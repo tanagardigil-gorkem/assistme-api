@@ -19,3 +19,9 @@ build/
 
 # IDE / editor
 /.idea/
+
+# Database volumes
+postgres_data/
+*.db
+*.sqlite
+*.sqlite3

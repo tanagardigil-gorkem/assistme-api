@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ASSISTME_",
         case_sensitive=False,
+        env_file=".env",
+        env_file_encoding="utf-8",
     )
 
     cors_origins: list[str] = Field(default_factory=lambda: list(DEFAULT_CORS_ORIGINS))
@@ -35,6 +37,32 @@ class Settings(BaseSettings):
     rss_feeds: list[str] = Field(default_factory=lambda: list(DEFAULT_RSS_FEEDS))
     rss_ttl_seconds: int = Field(default=1200, ge=60, le=86400)
     weather_ttl_seconds: int = Field(default=600, ge=60, le=86400)
+
+    # Database
+    database_url: str = Field(
+        default="postgresql+asyncpg://assistme:devpassword@localhost:5433/assistme"
+    )
+    database_echo: bool = Field(default=False)
+
+    # Security
+    secret_key: str = Field(
+        default="dev-secret-key-change-in-production-32charslong!"
+    )  # JWT secret for fastapi-users
+    encryption_key: str = Field(
+        default="RCK1DSYrUVXulFjEiJi2unQzYok_diPANFjYZMdkBb0="
+    )  # Fernet key for token encryption (32 bytes base64) - CHANGE IN PRODUCTION!
+
+    # Google OAuth
+    google_client_id: str | None = Field(default=None)
+    google_client_secret: str | None = Field(default=None)
+
+    # OAuth Callback URL (must match Google Cloud Console)
+    oauth_callback_url: str = Field(
+        default="http://localhost:8000/api/v1/integrations/callback"
+    )
+
+    # Development mode - disables authentication
+    dev_mode: bool = Field(default=True)
 
     def model_post_init(self, __context: Any) -> None:
         # Allow ASSISTME_CORS_ORIGINS as JSON array or comma-separated string.
