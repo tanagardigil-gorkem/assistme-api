@@ -1,12 +1,14 @@
 # Email Menu (New UI)
 
-This document describes how the new Email menu UI should fetch emails and summaries
-from the backend and bind results to the provided mock layout.
+This document describes how the new Email menu UI should fetch cached emails and
+summaries from the backend, trigger background refresh, and bind results to the
+provided mock layout.
 
 ---
 
 **Backend Endpoints Used**
 - `GET /api/v1/integrations/{integration_id}/emails`
+- `POST /api/v1/integrations/{integration_id}/emails/sync`
 - `PATCH /api/v1/integrations/{integration_id}` (enable/disable, config)
 - `POST /api/v1/integrations/{integration_id}/execute` (optional, advanced actions)
 
@@ -20,7 +22,9 @@ from the backend and bind results to the provided mock layout.
 
 ---
 
-**Email Response Schema**
+**Email Response Schema (cached-first)**
+The endpoint always returns cached data immediately. If `refresh=true` or cached data is stale,
+the backend queues a background sync and returns `sync_status=syncing`.
 
 ```json
 {
@@ -38,9 +42,13 @@ from the backend and bind results to the provided mock layout.
       "summary": "This email shares the updated roadmap and asks for a sync."
     }
   ],
-  "next_page_token": "opaque-token"
+  "next_page_token": "opaque-token",
+  "sync_status": "idle",
+  "last_synced_at": "2024-04-03T16:15:30Z"
 }
 ```
+
+`sync_status` values: `idle`, `syncing`, `error`.
 
 ---
 
@@ -50,7 +58,8 @@ from the backend and bind results to the provided mock layout.
 - `label_ids`: repeated query parameter, e.g. `label_ids=INBOX&label_ids=STARRED`.
 - `max_results`: 1-100.
 - `page_token`: token from previous response.
-- `summarize`: `true` (default) or `false`.
+- `refresh`: `true` to trigger a background sync.
+- `summaries`: `true` (default) or `false` (cached summaries only).
 
 **Filter Mapping**
 - `all` -> `""`
@@ -81,6 +90,8 @@ Email detail (right column):
 Pagination row:
 - Previous/Next buttons -> call the endpoint with `page_token`
 - Use `next_page_token` to fetch the next page
+- Show a "Syncing..." state if `sync_status` is `syncing`
+- Show a stale marker if `last_synced_at` is older than your UI threshold
 
 ---
 
@@ -98,9 +109,9 @@ Use `PATCH /api/v1/integrations/{integration_id}` to toggle status:
 
 **Example Requests**
 
-Fetch first page (summaries):
+Fetch first page (cached summaries):
 ```
-GET /api/v1/integrations/{id}/emails?filter=all&max_results=20&summarize=true
+GET /api/v1/integrations/{id}/emails?filter=all&max_results=20&summaries=true
 ```
 
 Search + unread:
@@ -111,6 +122,11 @@ GET /api/v1/integrations/{id}/emails?filter=unread&query=from:design@company.com
 Next page:
 ```
 GET /api/v1/integrations/{id}/emails?page_token=NEXT_TOKEN
+```
+
+Trigger background sync:
+```
+POST /api/v1/integrations/{id}/emails/sync
 ```
 
 ---

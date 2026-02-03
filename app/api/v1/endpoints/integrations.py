@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-import asyncio
+import base64
+from datetime import datetime, timedelta
 import uuid
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
 from app.api.v1.deps import get_current_user
+from app.db.models.email_message import EmailMessage
+from app.db.models.email_sync_state import EmailSyncState
 from app.db.models.integration import Integration, IntegrationStatus
 from app.db.models.user import User
 from app.db.session import get_async_session
-from app.schemas.email import EmailListResponse, EmailResponse
+from app.schemas.email import EmailListResponse, EmailResponse, EmailSyncStatus as EmailSyncStatusSchema
 from app.schemas.integration import (
     AvailableProviderResponse,
     ConnectRequest,
@@ -31,7 +35,8 @@ from app.services.integrations.registry import (
     get_provider_service,
     list_available_providers,
 )
-from app.services.llm.email_summary import summarize_email
+from app.services.email_sync import enqueue_email_sync
+from app.core.config import get_settings
 
 if TYPE_CHECKING:
     pass
@@ -47,6 +52,20 @@ EMAIL_FILTERS = {
     "unread": "is:unread",
     "tasks": "label:tasks",
 }
+
+
+def _decode_page_token(token: str | None) -> int:
+    if not token:
+        return 0
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+        return max(int(decoded), 0)
+    except Exception:
+        return 0
+
+
+def _encode_page_token(offset: int) -> str:
+    return base64.urlsafe_b64encode(str(offset).encode("utf-8")).decode("utf-8")
 
 
 @router.get("/available", response_model=list[AvailableProviderResponse])
@@ -81,11 +100,12 @@ async def list_emails(
     label_ids: list[str] | None = Query(default=None),
     max_results: int | None = Query(default=None, ge=1, le=100),
     page_token: str | None = Query(default=None),
-    summarize: bool = Query(default=True),
+    refresh: bool = Query(default=False),
+    summaries: bool = Query(default=True),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """List emails for an email integration with optional summaries."""
+    """List cached emails for an email integration and optionally trigger refresh."""
     result = await session.execute(
         select(Integration).where(
             Integration.id == integration_id,
@@ -109,70 +129,142 @@ async def list_emails(
     if filter_value and filter_value not in EMAIL_FILTERS:
         raise HTTPException(status_code=400, detail="Unknown filter")
 
+    if "summarize" in request.query_params and "summaries" not in request.query_params:
+        summaries = request.query_params.get("summarize", "true").lower() == "true"
+
     config = integration.config or {}
-    effective_query = config.get("query")
-    if query is not None:
-        effective_query = query
+    effective_query = query if query is not None else config.get("query")
     effective_query = effective_query.strip() if isinstance(effective_query, str) else None
     if effective_query == "":
         effective_query = None
 
-    effective_label_ids = config.get("label_ids")
-    if label_ids is not None:
-        effective_label_ids = label_ids or None
-
-    effective_max_results = config.get("max_results")
-    if max_results is not None:
-        effective_max_results = max_results
+    effective_label_ids = label_ids if label_ids is not None else config.get("label_ids")
+    effective_max_results = max_results if max_results is not None else config.get("max_results", 20)
 
     filter_key = filter_value or "all"
-    filter_query = EMAIL_FILTERS.get(filter_key, "")
-    query_parts = [part for part in [filter_query, effective_query] if part]
-    combined_query = " ".join(query_parts) if query_parts else None
+    if filter_key not in EMAIL_FILTERS:
+        raise HTTPException(status_code=400, detail="Unknown filter")
 
-    params: dict = {}
-    if combined_query:
-        params["query"] = combined_query
+    stmt = select(EmailMessage).where(EmailMessage.integration_id == integration_id)
+
+    labels_column = cast(EmailMessage.labels, JSONB)
+
+    if filter_key == "unread":
+        stmt = stmt.where(labels_column.contains(["UNREAD"]))
+    elif filter_key == "tasks":
+        stmt = stmt.where(
+            or_(
+                labels_column.contains(["TASKS"]),
+                labels_column.contains(["tasks"]),
+            )
+        )
+
     if effective_label_ids:
-        params["label_ids"] = effective_label_ids
-    if effective_max_results is not None:
-        params["max_results"] = effective_max_results
-    if page_token:
-        params["page_token"] = page_token
+        label_filters = [labels_column.contains([label]) for label in effective_label_ids]
+        stmt = stmt.where(or_(*label_filters))
 
-    service = GmailService()
-    try:
-        emails, next_page_token = await service.list_emails_paginated(
-            session=session,
-            integration_id=integration_id,
-            params=params,
-        )
-    except ValueError as exc:
-        message = str(exc).lower()
-        if "no refresh token" in message or "token expired" in message:
-            integration.status = IntegrationStatus.EXPIRED
-            await session.commit()
-            raise HTTPException(
-                status_code=400,
-                detail="Integration expired. Please reconnect to refresh access.",
-            ) from exc
-        raise
-
-    email_items = [EmailResponse.model_validate(email) for email in emails]
-
-    if summarize:
-        semaphore = asyncio.Semaphore(3)
-
-        async def summarize_item(item: EmailResponse) -> EmailResponse:
-            async with semaphore:
-                summary = await summarize_email(item)
-                return item.model_copy(update={"summary": summary})
-
-        email_items = await asyncio.gather(
-            *[summarize_item(item) for item in email_items]
+    if effective_query:
+        pattern = f"%{effective_query}%"
+        stmt = stmt.where(
+            or_(
+                EmailMessage.subject.ilike(pattern),
+                EmailMessage.from_address.ilike(pattern),
+                EmailMessage.to_address.ilike(pattern),
+                EmailMessage.snippet.ilike(pattern),
+                EmailMessage.body.ilike(pattern),
+            )
         )
 
-    return EmailListResponse(items=email_items, next_page_token=next_page_token)
+    offset = _decode_page_token(page_token)
+    limit = effective_max_results or 20
+    stmt = (
+        stmt.order_by(EmailMessage.date_ts.desc().nullslast(), EmailMessage.created_at.desc())
+        .offset(offset)
+        .limit(limit + 1)
+    )
+    result = await session.execute(stmt)
+    messages = result.scalars().all()
+
+    has_more = len(messages) > limit
+    messages = messages[:limit]
+    next_page_token = _encode_page_token(offset + limit) if has_more else None
+
+    sync_state_result = await session.execute(
+        select(EmailSyncState).where(EmailSyncState.integration_id == integration_id)
+    )
+    sync_state = sync_state_result.scalar_one_or_none()
+
+    settings = get_settings()
+    now = datetime.utcnow()
+    is_stale = True
+    last_synced_at = None
+    sync_status = EmailSyncStatusSchema.IDLE
+    if sync_state:
+        last_synced_at = sync_state.last_synced_at
+        sync_status = EmailSyncStatusSchema(sync_state.status.value)
+        if last_synced_at:
+            is_stale = now - last_synced_at > timedelta(seconds=settings.email_sync_ttl_seconds)
+
+    if refresh or is_stale:
+        await enqueue_email_sync(integration_id)
+        if not sync_state:
+            sync_status = EmailSyncStatusSchema.SYNCING
+
+    email_items = [
+        EmailResponse(
+            id=message.provider_message_id,
+            thread_id=message.thread_id,
+            subject=message.subject,
+            from_=message.from_address,
+            to=message.to_address,
+            date=message.date,
+            snippet=message.snippet,
+            body=message.body,
+            labels=message.labels or [],
+            summary=message.summary if summaries else None,
+        )
+        for message in messages
+    ]
+
+    return EmailListResponse(
+        items=email_items,
+        next_page_token=next_page_token,
+        sync_status=sync_status,
+        last_synced_at=last_synced_at,
+    )
+
+
+@router.post("/{integration_id}/emails/sync")
+@limiter.limit("10/minute")
+async def sync_emails(
+    request: Request,
+    integration_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Trigger a background email sync."""
+    result = await session.execute(
+        select(Integration).where(
+            Integration.id == integration_id,
+            Integration.user_id == user.id,
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    if integration.status != IntegrationStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Integration is not active")
+
+    provider = integration.provider_type.value
+    if provider not in EMAIL_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Provider is not an email integration")
+    if provider == "microsoft":
+        raise HTTPException(status_code=501, detail="Provider not implemented")
+
+    await enqueue_email_sync(integration_id)
+    return {"status": "queued"}
 
 
 @router.post("/{provider}/connect", response_model=ConnectResponse)

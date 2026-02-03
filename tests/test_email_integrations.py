@@ -1,10 +1,13 @@
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.deps import get_current_user
 from app.db.models.integration import Integration, IntegrationStatus, ProviderType
+from app.db.models.email_message import EmailMessage
+from app.db.models.email_sync_state import EmailSyncState, EmailSyncStatus
 from app.db.models.oauth_state import OAuthState
 from app.db.models.user import User
 from app.db.session import get_async_session
@@ -13,8 +16,9 @@ from app.services.integrations.gmail import GMAIL_OAUTH_EXTRAS, GmailService
 
 
 class _FakeResult:
-    def __init__(self, record):
+    def __init__(self, record=None, items=None):
         self._record = record
+        self._items = items or []
 
     def scalar_one_or_none(self):
         return self._record
@@ -24,17 +28,35 @@ class _FakeResult:
             raise ValueError("No rows returned")
         return self._record
 
+    def scalars(self):
+        class _Scalars:
+            def __init__(self, items):
+                self._items = items
+
+            def all(self):
+                return list(self._items)
+
+        return _Scalars(self._items)
+
 
 class _FakeSession:
-    def __init__(self, integration):
+    def __init__(self, integration, sync_state, messages):
         self._integration = integration
-        self.committed = False
+        self._sync_state = sync_state
+        self._messages = messages
 
-    async def execute(self, *args, **kwargs):
-        return _FakeResult(self._integration)
+    async def execute(self, stmt, *args, **kwargs):
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is Integration:
+            return _FakeResult(record=self._integration)
+        if entity is EmailSyncState:
+            return _FakeResult(record=self._sync_state)
+        if entity is EmailMessage:
+            return _FakeResult(items=self._messages)
+        return _FakeResult()
 
     async def commit(self):
-        self.committed = True
+        return None
 
 
 def _make_integration(
@@ -66,7 +88,7 @@ def _override_session(session: _FakeSession):
 
 
 @pytest.mark.asyncio
-async def test_list_emails_success_with_summary(monkeypatch):
+async def test_cached_emails_response(monkeypatch):
     app = create_app()
     monkeypatch.setattr(GmailService, "__init__", lambda self: None)
     user = User(
@@ -78,159 +100,30 @@ async def test_list_emails_success_with_summary(monkeypatch):
         is_verified=True,
     )
     integration = _make_integration(ProviderType.GMAIL, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
-
-    sample_email = {
-        "id": "msg-1",
-        "thread_id": "thread-1",
-        "subject": "Hello",
-        "from": "Sender <sender@example.com>",
-        "to": "Me <me@example.com>",
-        "date": "Wed, 3 Apr 2024 09:12:00 -0700",
-        "snippet": "Quick update",
-        "body": "Full body",
-        "labels": ["INBOX"],
-    }
-
-    async def fake_list_emails(*args, **kwargs):
-        return [sample_email], "next-token"
-
-    async def fake_summarize(_email):
-        return "Summary text"
-
-    monkeypatch.setattr(GmailService, "list_emails_paginated", fake_list_emails)
-    monkeypatch.setattr(
-        "app.api.v1.endpoints.integrations.summarize_email",
-        fake_summarize,
+    sync_state = EmailSyncState(
+        integration_id=integration.id,
+        status=EmailSyncStatus.IDLE,
+        last_synced_at=datetime.utcnow(),
     )
-
-    app.dependency_overrides[get_current_user] = _override_user(user)
-    app.dependency_overrides[get_async_session] = _override_session(session)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/integrations/{integration.id}/emails")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["next_page_token"] == "next-token"
-        assert body["items"][0]["summary"] == "Summary text"
-
-
-@pytest.mark.asyncio
-async def test_list_emails_summary_none(monkeypatch):
-    app = create_app()
-    monkeypatch.setattr(GmailService, "__init__", lambda self: None)
-    user = User(
-        id=uuid.uuid4(),
-        email="test@example.com",
-        hashed_password="",
-        is_active=True,
-        is_superuser=False,
-        is_verified=True,
+    message = EmailMessage(
+        integration_id=integration.id,
+        provider_message_id="msg-1",
+        thread_id="thread-1",
+        from_address="Sender <sender@example.com>",
+        to_address="Me <me@example.com>",
+        subject="Hello",
+        date="Wed, 3 Apr 2024 09:12:00 -0700",
+        snippet="Quick update",
+        body="Full body",
+        labels=["INBOX"],
+        summary="Summary text",
     )
-    integration = _make_integration(ProviderType.GMAIL, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
+    session = _FakeSession(integration, sync_state, [message])
 
-    async def fake_list_emails(*args, **kwargs):
-        return [
-            {
-                "id": "msg-2",
-                "thread_id": "thread-2",
-                "subject": "Hello",
-                "from": "Sender <sender@example.com>",
-                "to": "Me <me@example.com>",
-                "date": "Wed, 3 Apr 2024 09:12:00 -0700",
-                "snippet": "Quick update",
-                "body": "Full body",
-                "labels": ["INBOX"],
-            }
-        ], None
-
-    async def fake_summarize(_email):
+    async def fake_enqueue(_integration_id):
         return None
 
-    monkeypatch.setattr(GmailService, "list_emails_paginated", fake_list_emails)
-    monkeypatch.setattr(
-        "app.api.v1.endpoints.integrations.summarize_email",
-        fake_summarize,
-    )
-
-    app.dependency_overrides[get_current_user] = _override_user(user)
-    app.dependency_overrides[get_async_session] = _override_session(session)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/integrations/{integration.id}/emails")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["items"][0]["summary"] is None
-
-
-@pytest.mark.asyncio
-async def test_list_emails_provider_guard(monkeypatch):
-    app = create_app()
-    monkeypatch.setattr(GmailService, "__init__", lambda self: None)
-    user = User(
-        id=uuid.uuid4(),
-        email="test@example.com",
-        hashed_password="",
-        is_active=True,
-        is_superuser=False,
-        is_verified=True,
-    )
-    integration = _make_integration(ProviderType.NOTION, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
-
-    app.dependency_overrides[get_current_user] = _override_user(user)
-    app.dependency_overrides[get_async_session] = _override_session(session)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/integrations/{integration.id}/emails")
-        assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_list_emails_microsoft_not_implemented(monkeypatch):
-    app = create_app()
-    monkeypatch.setattr(GmailService, "__init__", lambda self: None)
-    user = User(
-        id=uuid.uuid4(),
-        email="test@example.com",
-        hashed_password="",
-        is_active=True,
-        is_superuser=False,
-        is_verified=True,
-    )
-    integration = _make_integration(ProviderType.MICROSOFT, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
-
-    app.dependency_overrides[get_current_user] = _override_user(user)
-    app.dependency_overrides[get_async_session] = _override_session(session)
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/integrations/{integration.id}/emails")
-        assert resp.status_code == 501
-
-
-@pytest.mark.asyncio
-async def test_list_emails_filter_mapping(monkeypatch):
-    app = create_app()
-    monkeypatch.setattr(GmailService, "__init__", lambda self: None)
-    user = User(
-        id=uuid.uuid4(),
-        email="test@example.com",
-        hashed_password="",
-        is_active=True,
-        is_superuser=False,
-        is_verified=True,
-    )
-    integration = _make_integration(ProviderType.GMAIL, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
-    captured = {}
-
-    async def fake_list_emails(*args, **kwargs):
-        captured["params"] = kwargs.get("params", {})
-        return [], None
-
-    monkeypatch.setattr(GmailService, "list_emails_paginated", fake_list_emails)
+    monkeypatch.setattr("app.api.v1.endpoints.integrations.enqueue_email_sync", fake_enqueue)
 
     app.dependency_overrides[get_current_user] = _override_user(user)
     app.dependency_overrides[get_async_session] = _override_session(session)
@@ -238,18 +131,15 @@ async def test_list_emails_filter_mapping(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             f"/api/v1/integrations/{integration.id}/emails",
-            params={
-                "filter": "unread",
-                "query": "from:test@example.com",
-                "summarize": "false",
-            },
+            params={"summaries": "true"},
         )
         assert resp.status_code == 200
-        assert captured["params"]["query"] == "is:unread from:test@example.com"
-
+        body = resp.json()
+        assert body["items"][0]["summary"] == "Summary text"
+        assert body["sync_status"] == "idle"
 
 @pytest.mark.asyncio
-async def test_list_emails_expired_marks_status(monkeypatch):
+async def test_refresh_triggers_sync(monkeypatch):
     app = create_app()
     monkeypatch.setattr(GmailService, "__init__", lambda self: None)
     user = User(
@@ -261,21 +151,29 @@ async def test_list_emails_expired_marks_status(monkeypatch):
         is_verified=True,
     )
     integration = _make_integration(ProviderType.GMAIL, IntegrationStatus.ACTIVE, user.id)
-    session = _FakeSession(integration)
+    sync_state = EmailSyncState(
+        integration_id=integration.id,
+        status=EmailSyncStatus.IDLE,
+        last_synced_at=datetime.utcnow() - timedelta(minutes=10),
+    )
+    session = _FakeSession(integration, sync_state, [])
+    called = {"value": False}
 
-    async def fake_list_emails(*args, **kwargs):
-        raise ValueError("Token expired and no refresh token available")
+    async def fake_enqueue(_integration_id):
+        called["value"] = True
 
-    monkeypatch.setattr(GmailService, "list_emails_paginated", fake_list_emails)
+    monkeypatch.setattr("app.api.v1.endpoints.integrations.enqueue_email_sync", fake_enqueue)
 
     app.dependency_overrides[get_current_user] = _override_user(user)
     app.dependency_overrides[get_async_session] = _override_session(session)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/v1/integrations/{integration.id}/emails")
-        assert resp.status_code == 400
-        assert session.committed is True
-        assert integration.status == IntegrationStatus.EXPIRED
+        resp = await client.get(
+            f"/api/v1/integrations/{integration.id}/emails",
+            params={"refresh": "true"},
+        )
+        assert resp.status_code == 200
+        assert called["value"] is True
 
 
 @pytest.mark.asyncio

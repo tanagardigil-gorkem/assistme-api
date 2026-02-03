@@ -63,6 +63,9 @@ class Settings(BaseSettings):
         default="http://localhost:8000/api/v1/integrations/callback"
     )
 
+    # Email sync
+    email_sync_ttl_seconds: int = Field(default=300, ge=60, le=3600)
+
     # OpenAI / LangChain
     openai_api_key: str | None = Field(default=None)
     openai_model: str = Field(default="gpt-4o-mini")

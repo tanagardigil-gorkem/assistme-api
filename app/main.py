@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.http import create_http_client, set_http_client
 from app.db.base import Base
 from app.db.session import engine
+import app.db.models  # noqa: F401
 
 
 @asynccontextmanager

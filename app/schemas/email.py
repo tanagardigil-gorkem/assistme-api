@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime
+from enum import Enum
+
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class EmailSyncStatus(str, Enum):
+    IDLE = "idle"
+    SYNCING = "syncing"
+    ERROR = "error"
 
 
 class EmailResponse(BaseModel):
@@ -21,3 +30,5 @@ class EmailResponse(BaseModel):
 class EmailListResponse(BaseModel):
     items: list[EmailResponse]
     next_page_token: str | None = None
+    sync_status: EmailSyncStatus | None = None
+    last_synced_at: datetime | None = None
