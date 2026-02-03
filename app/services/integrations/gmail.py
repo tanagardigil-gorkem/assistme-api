@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,12 @@ GMAIL_API_BASE = "https://www.googleapis.com/gmail/v1"
 
 # Gmail OAuth endpoints
 GMAIL_OAUTH_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+GMAIL_OAUTH_EXTRAS = {
+    "access_type": "offline",
+    "prompt": "consent",
+    "include_granted_scopes": "true",
+}
+GMAIL_FETCH_CONCURRENCY = 5
 
 
 class GmailService(BaseIntegrationService):
@@ -82,11 +89,30 @@ class GmailService(BaseIntegrationService):
 
     async def _list_emails(self, access_token: str, params: dict) -> list[dict]:
         """List recent emails."""
+        emails, _ = await self._list_emails_paginated(access_token, params)
+        return emails
+
+    async def list_emails_paginated(
+        self,
+        session: AsyncSession,
+        integration_id: uuid.UUID,
+        params: dict,
+    ) -> tuple[list[dict], str | None]:
+        access_token = await self.oauth_service.get_valid_access_token(session, integration_id)
+        return await self._list_emails_paginated(access_token, params)
+
+    async def _list_emails_paginated(
+        self,
+        access_token: str,
+        params: dict,
+    ) -> tuple[list[dict], str | None]:
+        """List recent emails with pagination."""
         max_results = params.get("max_results")
         if max_results is None:
             max_results = 10
         query = params.get("query") or ""
         label_ids = params.get("label_ids") or None
+        page_token = params.get("page_token")
 
         headers = {"Authorization": f"Bearer {access_token}"}
         http_client = get_http_client()
@@ -96,6 +122,8 @@ class GmailService(BaseIntegrationService):
             request_params["q"] = query
         if label_ids:
             request_params["labelIds"] = label_ids
+        if page_token:
+            request_params["pageToken"] = page_token
 
         response = await http_client.get(
             f"{GMAIL_API_BASE}/users/me/messages",
@@ -106,15 +134,19 @@ class GmailService(BaseIntegrationService):
 
         data = response.json()
         messages = data.get("messages", [])
+        next_page_token = data.get("nextPageToken")
 
         # Fetch full details for each message
-        emails = []
-        for msg in messages[:max_results]:
-            email = await self._get_email_details(access_token, msg["id"])
-            if email:
-                emails.append(email)
+        semaphore = asyncio.Semaphore(GMAIL_FETCH_CONCURRENCY)
 
-        return emails
+        async def fetch_details(message_id: str) -> dict:
+            async with semaphore:
+                return await self._get_email_details(access_token, message_id)
+
+        tasks = [fetch_details(msg["id"]) for msg in messages[:max_results]]
+        emails = await asyncio.gather(*tasks) if tasks else []
+
+        return [email for email in emails if email], next_page_token
 
     async def _get_email(self, access_token: str, params: dict) -> dict:
         """Get a specific email by ID."""

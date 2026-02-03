@@ -49,6 +49,7 @@ class OAuthService:
         user: "User",
         redirect_uri: str,
         callback_url: str,
+        extras_params: dict | None = None,
     ) -> str:
         """Generate OAuth authorization URL and store state."""
         import secrets
@@ -80,6 +81,7 @@ class OAuthService:
             redirect_uri=callback_url,
             scope=self.scopes,
             state=state,
+            extras_params=extras_params,
         )
 
         return authorization_url

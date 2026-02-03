@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from typing import Any
 
@@ -62,6 +63,12 @@ class Settings(BaseSettings):
         default="http://localhost:8000/api/v1/integrations/callback"
     )
 
+    # OpenAI / LangChain
+    openai_api_key: str | None = Field(default=None)
+    openai_model: str = Field(default="gpt-4o-mini")
+    openai_timeout_s: float = Field(default=30.0, ge=1.0, le=120.0)
+    openai_max_retries: int = Field(default=2, ge=0, le=5)
+
     # Development mode - disables authentication
     dev_mode: bool = Field(default=True)
 
@@ -89,6 +96,11 @@ class Settings(BaseSettings):
                     self.rss_feeds = [s.strip() for s in parsed.split(",") if s.strip()]
             else:
                 self.rss_feeds = [s.strip() for s in parsed.split(",") if s.strip()]
+
+        if not self.openai_api_key:
+            fallback_key = os.getenv("OPENAI_API_KEY")
+            if fallback_key:
+                self.openai_api_key = fallback_key
 
 
 @lru_cache(maxsize=1)

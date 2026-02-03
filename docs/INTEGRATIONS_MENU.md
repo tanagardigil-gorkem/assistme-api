@@ -1,9 +1,9 @@
 # Integrations Menu (Next.js App Router)
 
-This guide explains how to build the Connections/Integrations menu UI (matching the provided screenshot) and wire Gmail OAuth using the existing backend endpoints. Gmail is the only live integration; all others are shown as Coming Soon.
+This guide explains how to build the Integrations menu UI (matching the provided screenshot) and wire Gmail OAuth using the existing backend endpoints. Gmail is the only live integration; all others are shown as Coming Soon.
 
 **Purpose & Scope**
-- Provide a single “Connections” page to manage integrations.
+- Provide a single “Integrations” page to manage integrations.
 - Gmail is live and actionable.
 - Other integrations appear in the UI but are disabled.
 
@@ -215,16 +215,10 @@ import { AvailableProvider, Integration } from '../types';
 
 const API_URL = process.env.API_URL || 'http://localhost:8000';
 
-async function authHeader() {
-  const token = (await cookies()).get('jwt_token')?.value;
-  if (!token) redirect('/login');
-  return { Authorization: `Bearer ${token}` };
-}
 
 export async function getAvailableIntegrations(): Promise<AvailableProvider[]> {
   const res = await fetch(`${API_URL}/api/v1/integrations/available`, {
     headers: {
-      ...(await authHeader()),
     },
     cache: 'no-store',
   });
@@ -235,7 +229,7 @@ export async function getAvailableIntegrations(): Promise<AvailableProvider[]> {
 export async function getMyIntegrations(): Promise<Integration[]> {
   const res = await fetch(`${API_URL}/api/v1/integrations/`, {
     headers: {
-      ...(await authHeader()),
+
     },
     cache: 'no-store',
   });
@@ -249,7 +243,7 @@ export async function connectGmail(redirectUri: string): Promise<{ authorization
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(await authHeader()),
+
     },
     body: JSON.stringify({ redirect_uri: redirectUri }),
   });
@@ -261,7 +255,7 @@ export async function disconnectIntegration(integrationId: string): Promise<void
   const res = await fetch(`${API_URL}/api/v1/integrations/${integrationId}`, {
     method: 'DELETE',
     headers: {
-      ...(await authHeader()),
+
     },
   });
   if (!res.ok) throw new Error('Failed to disconnect integration');
