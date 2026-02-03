@@ -20,6 +20,7 @@ from app.schemas.integration import (
     ConnectResponse,
     ExecuteRequest,
     ExecuteResponse,
+    IntegrationUpdateRequest,
     IntegrationListResponse,
     IntegrationResponse,
 )
@@ -159,6 +160,54 @@ async def disconnect_integration(
     return {"success": True}
 
 
+@router.patch("/{integration_id}", response_model=IntegrationResponse)
+async def update_integration(
+    integration_id: uuid.UUID,
+    update_req: IntegrationUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Update integration status or config."""
+    result = await session.execute(
+        select(Integration).where(
+            Integration.id == integration_id,
+            Integration.user_id == user.id,
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    if update_req.status is not None:
+        if update_req.status.value not in {
+            IntegrationStatus.ACTIVE.value,
+            IntegrationStatus.DISCONNECTED.value,
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="Only active or disconnected status are supported",
+            )
+        integration.status = IntegrationStatus(update_req.status.value)
+
+    if update_req.config is not None:
+        config_update = update_req.config
+        if hasattr(config_update, "model_dump"):
+            config_update = config_update.model_dump(exclude_none=True)
+        elif isinstance(config_update, dict):
+            config_update = {k: v for k, v in config_update.items() if v is not None}
+        else:
+            config_update = {}
+
+        if config_update:
+            existing_config = integration.config or {}
+            integration.config = {**existing_config, **config_update}
+
+    await session.commit()
+
+    return IntegrationResponse.model_validate(integration)
+
+
 @router.post("/{integration_id}/execute", response_model=ExecuteResponse)
 @limiter.limit("30/minute")
 async def execute_action(
@@ -194,6 +243,7 @@ async def execute_action(
             integration_id=integration_id,
             action=execute_req.action,
             params=execute_req.params,
+            integration_config=integration.config,
         )
 
         return ExecuteResponse(success=True, data=data)

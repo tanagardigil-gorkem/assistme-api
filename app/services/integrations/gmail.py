@@ -45,7 +45,14 @@ class GmailService(BaseIntegrationService):
             scopes=GMAIL_OAUTH_SCOPES,
         )
 
-    async def execute(self, session: AsyncSession, integration_id: uuid.UUID, action: str, params: dict) -> Any:
+    async def execute(
+        self,
+        session: AsyncSession,
+        integration_id: uuid.UUID,
+        action: str,
+        params: dict,
+        integration_config: dict | None = None,
+    ) -> Any:
         """Execute a Gmail action."""
         access_token = await self.oauth_service.get_valid_access_token(session, integration_id)
 
@@ -59,7 +66,11 @@ class GmailService(BaseIntegrationService):
         if action not in actions:
             raise ValueError(f"Unknown action: {action}")
 
-        return await actions[action](access_token, params)
+        merged_params = params
+        if action in {"list_emails", "search"} and integration_config:
+            merged_params = {**integration_config, **params}
+
+        return await actions[action](access_token, merged_params)
 
     async def refresh_token(self, session: AsyncSession, integration_id: uuid.UUID) -> bool:
         """Refresh the access token."""
@@ -71,8 +82,11 @@ class GmailService(BaseIntegrationService):
 
     async def _list_emails(self, access_token: str, params: dict) -> list[dict]:
         """List recent emails."""
-        max_results = params.get("max_results", 10)
-        query = params.get("query", "")
+        max_results = params.get("max_results")
+        if max_results is None:
+            max_results = 10
+        query = params.get("query") or ""
+        label_ids = params.get("label_ids") or None
 
         headers = {"Authorization": f"Bearer {access_token}"}
         http_client = get_http_client()
@@ -80,6 +94,8 @@ class GmailService(BaseIntegrationService):
         request_params = {"maxResults": max_results}
         if query:
             request_params["q"] = query
+        if label_ids:
+            request_params["labelIds"] = label_ids
 
         response = await http_client.get(
             f"{GMAIL_API_BASE}/users/me/messages",

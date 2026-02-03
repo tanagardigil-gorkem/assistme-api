@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     # Google OAuth
     google_client_id: str | None = Field(default=None)
     google_client_secret: str | None = Field(default=None)
+    gmail_enabled: bool = Field(default=True)
 
     # OAuth Callback URL (must match Google Cloud Console)
     oauth_callback_url: str = Field(

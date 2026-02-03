@@ -16,7 +16,14 @@ class BaseIntegrationService(ABC):
     provider_type: str
 
     @abstractmethod
-    async def execute(self, session: "AsyncSession", integration_id: uuid.UUID, action: str, params: dict) -> Any:
+    async def execute(
+        self,
+        session: "AsyncSession",
+        integration_id: uuid.UUID,
+        action: str,
+        params: dict,
+        integration_config: dict | None = None,
+    ) -> Any:
         """Execute an action on the integration."""
         pass
 

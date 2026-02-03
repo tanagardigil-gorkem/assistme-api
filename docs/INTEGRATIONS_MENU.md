@@ -13,6 +13,7 @@ This guide explains how to build the Connections/Integrations menu UI (matching 
 - `GET /api/v1/integrations/available`
 - `GET /api/v1/integrations/`
 - `POST /api/v1/integrations/gmail/connect`
+- `PATCH /api/v1/integrations/{integration_id}`
 - `DELETE /api/v1/integrations/{integration_id}`
 
 ---
@@ -83,7 +84,7 @@ export const INTEGRATION_CATALOG: IntegrationCatalogItem[] = [
   {
     provider_type: 'gmail',
     name: 'Gmail',
-    description: 'Read, draft, and manage emails.',
+    description: 'Read and search emails.',
     category: 'mail',
     icon: <Mail className="h-5 w-5" />,
     comingSoon: false,
@@ -196,6 +197,10 @@ Mapping logic:
 - missing → “Disconnected”, toggle off, “Connect”
 - comingSoon → disabled, “Coming Soon”
 
+Toggle behavior:
+- Use `PATCH /api/v1/integrations/{integration_id}` to set `status` to `active` or `disconnected`.
+- Keep `DELETE` for full disconnect only.
+
 ---
 
 **Connection Flow**
@@ -261,6 +266,29 @@ export async function disconnectIntegration(integrationId: string): Promise<void
   });
   if (!res.ok) throw new Error('Failed to disconnect integration');
 }
+
+export async function updateIntegration(
+  integrationId: string,
+  update: {
+    status?: 'active' | 'disconnected';
+    config?: {
+      query?: string;
+      label_ids?: string[];
+      max_results?: number;
+    };
+  }
+): Promise<Integration> {
+  const res = await fetch(`${API_URL}/api/v1/integrations/${integrationId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(await authHeader()),
+    },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw new Error('Failed to update integration');
+  return res.json();
+}
 ```
 
 Client-side connect action:
@@ -294,6 +322,33 @@ export async function disconnect(integrationId: string) {
   const ok = window.confirm('Disconnect this integration?');
   if (!ok) return;
   await disconnectIntegration(integrationId);
+}
+```
+
+---
+
+**Configure / Toggle Flow**
+
+```ts
+// app/components/integrations/ConfigureButton.tsx
+'use client';
+
+import { updateIntegration } from '@/app/lib/integrations/api';
+
+export async function saveGmailFilters(integrationId: string) {
+  await updateIntegration(integrationId, {
+    config: {
+      query: 'from:inbox@example.com',
+      label_ids: ['INBOX'],
+      max_results: 20,
+    },
+  });
+}
+
+export async function toggleIntegration(integrationId: string, enabled: boolean) {
+  await updateIntegration(integrationId, {
+    status: enabled ? 'active' : 'disconnected',
+  });
 }
 ```
 

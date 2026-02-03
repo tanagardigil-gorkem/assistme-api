@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProviderType(str, Enum):
@@ -20,6 +20,12 @@ class IntegrationStatus(str, Enum):
     EXPIRED = "expired"
     ERROR = "error"
     DISCONNECTED = "disconnected"
+
+
+class GmailConfig(BaseModel):
+    query: str | None = Field(default=None, max_length=500)
+    label_ids: list[str] | None = None
+    max_results: int | None = Field(default=None, ge=1, le=100)
 
 
 class IntegrationBase(BaseModel):
@@ -56,7 +62,12 @@ class ConnectResponse(BaseModel):
 
 class ExecuteRequest(BaseModel):
     action: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
+
+
+class IntegrationUpdateRequest(BaseModel):
+    status: IntegrationStatus | None = None
+    config: GmailConfig | dict | None = None
 
 
 class ExecuteResponse(BaseModel):

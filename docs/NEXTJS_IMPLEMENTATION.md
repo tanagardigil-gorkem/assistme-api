@@ -93,6 +93,12 @@ export interface Integration {
   updated_at: string;
 }
 
+export interface GmailConfig {
+  query?: string;
+  label_ids?: string[];
+  max_results?: number;
+}
+
 export interface AvailableProvider {
   provider_type: string;
   name: string;
@@ -217,6 +223,20 @@ export async function connectGmail(redirectUri: string): Promise<ConnectResponse
 export async function disconnectIntegration(integrationId: string): Promise<void> {
   await fetchAPI(`/integrations/${integrationId}`, {
     method: 'DELETE',
+  });
+}
+
+// Update integration status or config
+export async function updateIntegration(
+  integrationId: string,
+  update: {
+    status?: 'active' | 'disconnected';
+    config?: GmailConfig;
+  }
+): Promise<Integration> {
+  return fetchAPI<Integration>(`/integrations/${integrationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(update),
   });
 }
 
@@ -371,6 +391,9 @@ function GmailIcon({ className }: { className?: string }) {
 ```
 
 ### `app/components/integrations/IntegrationList.tsx`
+
+Use `updateIntegration` to toggle status (`active`/`disconnected`) and save Gmail filter settings
+(`query`, `label_ids`, `max_results`) in `config`.
 
 ```typescript
 'use client';

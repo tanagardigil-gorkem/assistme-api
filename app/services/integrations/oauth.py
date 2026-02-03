@@ -13,7 +13,6 @@ from app.core.security import decrypt_token, encrypt_token
 from app.db.models.integration import Integration, IntegrationStatus, ProviderType
 from app.db.models.integration_token import IntegrationToken
 from app.db.models.oauth_state import OAuthState
-from app.services.integrations.registry import register_provider
 
 if TYPE_CHECKING:
     from app.db.models.user import User
