@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone as dt_timezone
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.dashboard import DashboardMorningResponse, MoodBlock
+from app.services.dashboard.myday import get_myday_briefing
 from app.services.news.rss import get_top_news
 from app.services.weather.open_meteo import get_current_weather
 
@@ -15,12 +19,27 @@ def _mood_block() -> MoodBlock:
     )
 
 
-async def get_daily_feed(*, lat: float, lon: float, timezone: str, news_limit: int, q: str | None):
+async def get_daily_feed(
+    *,
+    user_id: UUID,
+    session: AsyncSession,
+    lat: float,
+    lon: float,
+    timezone: str,
+    news_limit: int,
+    q: str | None,
+):
     weather = await get_current_weather(lat=lat, lon=lon, timezone=timezone)
     news = await get_top_news(limit=news_limit, q=q, sources=None)
+    myday = await get_myday_briefing(
+        user_id=user_id,
+        timezone=timezone,
+        session=session,
+    )
     return DashboardMorningResponse(
         generated_at=datetime.now(dt_timezone.utc),
         weather=weather,
         news=news.items,
         mood=_mood_block(),
+        myday=myday,
     )

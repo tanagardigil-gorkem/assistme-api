@@ -39,7 +39,7 @@ async def test_dashboard_morning_success():
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             r = await client.get(
-                "/api/v1/dashboard/morning",
+                "/api/v1/dashboard/daily-feed",
                 params={"lat": 40.0, "lon": 29.0, "timezone": "UTC", "limit": 5},
             )
             assert r.status_code == 200
@@ -47,3 +47,4 @@ async def test_dashboard_morning_success():
             assert "weather" in body
             assert "news" in body
             assert "mood" in body
+            assert "myday" in body

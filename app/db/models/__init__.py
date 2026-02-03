@@ -5,6 +5,7 @@ from app.db.models.integration_token import IntegrationToken
 from app.db.models.email_message import EmailMessage
 from app.db.models.email_sync_state import EmailSyncState, EmailSyncStatus
 from app.db.models.oauth_state import OAuthState
+from app.db.models.task import Task
 from app.db.models.user import User
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "EmailSyncState",
     "EmailSyncStatus",
     "OAuthState",
+    "Task",
     "ProviderType",
     "IntegrationStatus",
 ]
